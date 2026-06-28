@@ -38,7 +38,7 @@ It generates a separate Excel report with the matching results and status colors
 1. Open PowerShell.
 2. Change to this repository folder:
    ```powershell
-   cd "c:\Users\markr\Documents\GitHub\CertificationHenkel"
+   cd "c:\Users\yourUser\Documents\GitHub\CertificationHenkel"
    ```
 3. Run the script:
    ```powershell
