@@ -334,15 +334,21 @@ try {
 
         # Headers
         $repWs.Cells.Item(1,1).Value2 = 'IDH'
+        $repWs.Cells.Item(1,1).NumberFormat = '@'
         $repWs.Cells.Item(1,2).Value2 = 'Batch'
+        $repWs.Cells.Item(1,2).NumberFormat = '@'
         $repWs.Cells.Item(1,3).Value2 = 'Status'
         $repWs.Cells.Item(1,4).Value2 = 'FoundPath'
         $repWs.Cells.Item(1,5).Value2 = 'ExcelRow'
 
         $rowIndex = 2
         foreach ($r in $reportRows) {
-            $repWs.Cells.Item($rowIndex,1).Value2 = if ($null -ne $r.IDH) { [string]$r.IDH } else { '' }
-            $repWs.Cells.Item($rowIndex,2).Value2 = if ($null -ne $r.Batch) { [string]$r.Batch } else { '' }
+            $idhCell = $repWs.Cells.Item($rowIndex,1)
+            $idhCell.Value2 = if ($null -ne $r.IDH) { [string]$r.IDH } else { '' }
+            $idhCell.NumberFormat = '@'
+            $batchCell = $repWs.Cells.Item($rowIndex,2)
+            $batchCell.Value2 = if ($null -ne $r.Batch) { [string]$r.Batch } else { '' }
+            $batchCell.NumberFormat = '@'
             $repWs.Cells.Item($rowIndex,3).Value2 = if ($null -ne $r.Status) { [string]$r.Status } else { '' }
             $foundPath = if ($null -ne $r.FoundPath) { [string]$r.FoundPath } else { '' }
             if ($foundPath) {
