@@ -162,7 +162,10 @@ try {
 
     $outputFolder = Join-Path $PSScriptRoot ("FoundCertificates_{0}" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
     New-Item -ItemType Directory -Path $outputFolder -Force | Out-Null
+    $pdfOutputFolder = Join-Path $outputFolder "PDFs"
+    New-Item -ItemType Directory -Path $pdfOutputFolder -Force | Out-Null
     Log "Output folder: $outputFolder"
+    Log "PDF folder: $pdfOutputFolder"
 
     # Build a PDF candidate lookup keyed by IDH to speed matching.
     $uniqueIdhs = @{}
@@ -297,13 +300,13 @@ try {
 
             if ($match) {
                 $destinationName = $match.Name
-                $destinationPath = Join-Path $outputFolder $destinationName
+                $destinationPath = Join-Path $pdfOutputFolder $destinationName
                 $copyIndex = 1
                 while (Test-Path $destinationPath) {
                     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($match.Name)
                     $extension = [System.IO.Path]::GetExtension($match.Name)
                     $destinationName = "{0}_{1}{2}" -f $baseName, $copyIndex, $extension
-                    $destinationPath = Join-Path $outputFolder $destinationName
+                    $destinationPath = Join-Path $pdfOutputFolder $destinationName
                     $copyIndex++
                 }
                 Copy-Item -Path $match.FullName -Destination $destinationPath -Force
