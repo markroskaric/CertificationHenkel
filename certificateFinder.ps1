@@ -67,17 +67,15 @@ function Create-Field {
     $label.Size = New-Object System.Drawing.Size(160,22)
     Set-Win11Style -Control $label -Type 'Label'
 
-    $pathLabel = New-Object System.Windows.Forms.Label
+    $pathLabel = New-Object System.Windows.Forms.TextBox
     $pathLabel.Location = New-Object System.Drawing.Point(180,$yPos)
     $pathLabel.Size = New-Object System.Drawing.Size(400,28)
     $pathLabel.Text = "Not selected"
-    $pathLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
-    $pathLabel.AutoEllipsis = $true
-    $pathLabel.AutoSize = $false
     $pathLabel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
     $pathLabel.BackColor = [System.Drawing.Color]::White
     $pathLabel.ForeColor = [System.Drawing.Color]::FromArgb(64,64,64)
-    $pathLabel.Padding = New-Object System.Windows.Forms.Padding(4,0,4,0)
+    $pathLabel.Margin = New-Object System.Windows.Forms.Padding(0)
+    $pathLabel.Multiline = $false
 
     $button = New-Object System.Windows.Forms.Button
     $button.Text = "Browse"
@@ -125,6 +123,8 @@ function Log($msg) {
 
 $certificationField.Button.Add_Click({
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.Description = "Select the certificates folder"
+    $dialog.ShowNewFolderButton = $false
     if ($dialog.ShowDialog() -eq "OK") {
         $certificationField.Value = $dialog.SelectedPath
         $certificationField.DisplayLabel.Text = $dialog.SelectedPath
@@ -143,7 +143,8 @@ try {
     $logBox.Clear()
 
     $idhFile = $IdhBatchFile
-    $certificationFolder = $certificationField.Value
+    $certificationFolder = $certificationField.DisplayLabel.Text
+    $certificationField.Value = $certificationFolder
 
     if ([string]::IsNullOrWhiteSpace($idhFile) -or !(Test-Path $idhFile)) {
         Log "ERROR: BatchIdh.xlsx not found"
@@ -158,6 +159,10 @@ try {
     Log "Indexing PDFs..."
     $allPdf = Get-ChildItem $certificationFolder -Recurse -Filter *.pdf -File
     Log "Found $($allPdf.Count) PDF files in $certificationFolder"
+
+    $outputFolder = Join-Path $PSScriptRoot ("FoundCertificates_{0}" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+    New-Item -ItemType Directory -Path $outputFolder -Force | Out-Null
+    Log "Output folder: $outputFolder"
 
     # Build a PDF candidate lookup keyed by IDH to speed matching.
     $uniqueIdhs = @{}
@@ -291,9 +296,21 @@ try {
             }
 
             if ($match) {
+                $destinationName = $match.Name
+                $destinationPath = Join-Path $outputFolder $destinationName
+                $copyIndex = 1
+                while (Test-Path $destinationPath) {
+                    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($match.Name)
+                    $extension = [System.IO.Path]::GetExtension($match.Name)
+                    $destinationName = "{0}_{1}{2}" -f $baseName, $copyIndex, $extension
+                    $destinationPath = Join-Path $outputFolder $destinationName
+                    $copyIndex++
+                }
+                Copy-Item -Path $match.FullName -Destination $destinationPath -Force
+
                 # Unique & found: record only
                 $blueCount++
-                $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Found'; FoundPath = $match.FullName; ExcelRow = $row.Row }
+                $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Found'; FoundPath = $destinationPath; ExcelRow = $row.Row }
             } else {
                 # Unique & missing: record only
                 $greenCount++
@@ -306,7 +323,7 @@ try {
 
     # Export an Excel workbook with color formatting for easy viewing
     try {
-        $reportXlsx = Join-Path $PSScriptRoot ("CertificateReport_{0}.xlsx" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        $reportXlsx = Join-Path $outputFolder ("CertificateReport_{0}.xlsx" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
         $repExcel = New-Object -ComObject Excel.Application
         $repExcel.Visible = $false
         $repWb = $repExcel.Workbooks.Add()
@@ -321,10 +338,10 @@ try {
 
         $rowIndex = 2
         foreach ($r in $reportRows) {
-            $repWs.Cells.Item($rowIndex,1).Value2 = [string]($r.IDH -ne $null ? $r.IDH : '')
-            $repWs.Cells.Item($rowIndex,2).Value2 = [string]($r.Batch -ne $null ? $r.Batch : '')
-            $repWs.Cells.Item($rowIndex,3).Value2 = [string]($r.Status -ne $null ? $r.Status : '')
-            $foundPath = [string]($r.FoundPath -ne $null ? $r.FoundPath : '')
+            $repWs.Cells.Item($rowIndex,1).Value2 = if ($null -ne $r.IDH) { [string]$r.IDH } else { '' }
+            $repWs.Cells.Item($rowIndex,2).Value2 = if ($null -ne $r.Batch) { [string]$r.Batch } else { '' }
+            $repWs.Cells.Item($rowIndex,3).Value2 = if ($null -ne $r.Status) { [string]$r.Status } else { '' }
+            $foundPath = if ($null -ne $r.FoundPath) { [string]$r.FoundPath } else { '' }
             if ($foundPath) {
                 $cell = $repWs.Cells.Item($rowIndex,4)
                 try {
@@ -335,7 +352,7 @@ try {
             } else {
                 $repWs.Cells.Item($rowIndex,4).Value2 = ""
             }
-            $repWs.Cells.Item($rowIndex,5).Value2 = [string]($r.ExcelRow -ne $null ? $r.ExcelRow : '')
+            $repWs.Cells.Item($rowIndex,5).Value2 = if ($null -ne $r.ExcelRow) { [string]$r.ExcelRow } else { '' }
 
             # Apply color based on status
             $color = 0xFFFFFF
