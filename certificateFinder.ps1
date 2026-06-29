@@ -104,16 +104,56 @@ $startBtn.Size = New-Object System.Drawing.Size(140,38)
 Set-Win11Style -Control $startBtn -Type 'Button'
 $form.Controls.Add($startBtn)
 
+$spinnerIndex = 0
+$spinnerTimer = New-Object System.Windows.Forms.Timer
+$spinnerTimer.Interval = 200
+$spinnerTimer.Add_Tick({
+    if (-not $startBtn.Enabled) {
+        $spinnerIndex = ($spinnerIndex + 1) % 4
+        switch ($spinnerIndex) {
+            0 { $startBtn.Text = 'START' }
+            1 { $startBtn.Text = 'START.' }
+            2 { $startBtn.Text = 'START..' }
+            3 { $startBtn.Text = 'START...' }
+        }
+    }
+})
+
+function Start-Spinner {
+    $spinnerIndex = 0
+    $startBtn.Text = 'START'
+    $spinnerTimer.Start()
+}
+
+function Stop-Spinner {
+    $spinnerTimer.Stop()
+    $startBtn.Text = 'START'
+}
+
 # LOG
-$logBox = New-Object System.Windows.Forms.TextBox
+$logBox = New-Object System.Windows.Forms.RichTextBox
 $logBox.Multiline = $true
 $logBox.ScrollBars = "Vertical"
 $logBox.Location = New-Object System.Drawing.Point(10,190)
 $logBox.Size = New-Object System.Drawing.Size(710,240)
+$logBox.ReadOnly = $true
+$logBox.HideSelection = $false
 Set-Win11Style -Control $logBox -Type 'Log'
 $form.Controls.Add($logBox)
-function Log($msg) {
+function Log($msg, $color = $null) {
+    if (-not $color) {
+        if ($msg.StartsWith('ERROR')) { $color = [System.Drawing.Color]::FromArgb(220,20,60) }
+        elseif ($msg.StartsWith('WARNING')) { $color = [System.Drawing.Color]::FromArgb(218,165,32) }
+        elseif ($msg.StartsWith('Missing')) { $color = [System.Drawing.Color]::FromArgb(255,0,0) }
+        elseif ($msg.StartsWith('Found')) { $color = [System.Drawing.Color]::FromArgb(0,128,0) }
+        elseif ($msg.StartsWith('Processing') -or $msg.StartsWith('Indexing') -or $msg.StartsWith('Creating') -or $msg.StartsWith('Using')) { $color = [System.Drawing.Color]::FromArgb(0,0,0) }
+        else { $color = [System.Drawing.Color]::Black }
+    }
+    $logBox.SelectionStart = $logBox.TextLength
+    $logBox.SelectionLength = 0
+    $logBox.SelectionColor = $color
     $logBox.AppendText($msg + "`r`n")
+    $logBox.SelectionColor = [System.Drawing.Color]::Black
     $logBox.Refresh()
 }
 
@@ -138,15 +178,17 @@ $certificationField.Button.Add_Click({
 $startBtn.Add_Click({
 
 try {
+
+    #Set variables
     $IdhBatchFile = Join-Path -Path $PSScriptRoot -ChildPath "BatchIdh.xlsx"
     $startBtn.Enabled = $false
+    Start-Spinner
     $logBox.Clear()
-
-    $idhFile = $IdhBatchFile
     $certificationFolder = $certificationField.DisplayLabel.Text
     $certificationField.Value = $certificationFolder
 
-    if ([string]::IsNullOrWhiteSpace($idhFile) -or !(Test-Path $idhFile)) {
+    #Check variables
+    if ([string]::IsNullOrWhiteSpace($IdhBatchFile) -or !(Test-Path $IdhBatchFile)) {
         Log "ERROR: BatchIdh.xlsx not found"
         return
     }
@@ -156,6 +198,7 @@ try {
         return
     }
 
+    #Start the process
     Log "Indexing PDFs..."
     $allPdf = Get-ChildItem $certificationFolder -Recurse -Filter *.pdf -File
     Log "Found $($allPdf.Count) PDF files in $certificationFolder"
@@ -164,20 +207,16 @@ try {
     New-Item -ItemType Directory -Path $outputFolder -Force | Out-Null
     $pdfOutputFolder = Join-Path $outputFolder "PDFs"
     New-Item -ItemType Directory -Path $pdfOutputFolder -Force | Out-Null
-    Log "Output folder: $outputFolder"
-    Log "PDF folder: $pdfOutputFolder"
+    Log "Creating output folders..."
 
-    # Build a PDF candidate lookup keyed by IDH to speed matching.
-    $uniqueIdhs = @{}
-    $pdfCandidatesByIdh = @{}
-    # we build the lookup after the workbook is open and table columns are known
+    #Excel setup
 
     $excel = New-Object -ComObject Excel.Application
     $excel.Visible = $false
 
     try {
-        $wb = $excel.Workbooks.Open($idhFile)
-        Log "Opened workbook: $idhFile"
+        $wb = $excel.Workbooks.Open($IdhBatchFile, $null, $true)
+        Log "Opened workbook: $IdhBatchFile"
     } catch {
         Log "ERROR opening workbook: $($_.ToString())"
         throw
@@ -201,32 +240,10 @@ try {
             throw "No table found on worksheet '$($ws.Name)'"
         }
     }
+
+   
+
     Log "Using table: $($table.Name) with $($table.DataBodyRange.Rows.Count) rows"
-
-    $idCol = $table.ListColumns["IDH"].Index
-    $batchCol = $table.ListColumns["Batch"].Index
-
-    # Build a PDF candidate lookup keyed by IDH to speed matching.
-    $pdfCandidatesByIdh = @{}
-    if ($table.DataBodyRange -ne $null) {
-        $idhSet = @{}
-        foreach ($row in $table.DataBodyRange.Rows) {
-            $idh = [string]$row.Cells.Item(1, $idCol).Value2
-            if (-not [string]::IsNullOrWhiteSpace($idh)) {
-                $idhLower = $idh.ToLower().Trim()
-                if (-not $idhSet.ContainsKey($idhLower)) { $idhSet[$idhLower] = $true }
-            }
-        }
-        foreach ($pdf in $allPdf) {
-            $pdfNameLower = $pdf.Name.ToLower()
-            foreach ($idhLower in $idhSet.Keys) {
-                if ($pdfNameLower.Contains($idhLower)) {
-                    if (-not $pdfCandidatesByIdh.ContainsKey($idhLower)) { $pdfCandidatesByIdh[$idhLower] = @() }
-                    $pdfCandidatesByIdh[$idhLower] += $pdf
-                }
-            }
-        }
-    }
 
     # Prepare counters
     $redCount = 0
@@ -234,97 +251,97 @@ try {
     $blueCount = 0
     $greenCount = 0
 
-    $fileColIndex = $null
-
     $reportRows = @()
 
     # First pass: count keys for rows where batch starts with 08
+    $idCol = $table.ListColumns["IDH"].Index
+    $batchCol = $table.ListColumns["Batch"].Index
     $keyCounts = @{}
     if ($table.DataBodyRange -ne $null) {
-        $seen = @{}
         foreach ($row in $table.DataBodyRange.Rows) {
-            $idh = [string]$row.Cells.Item(1, $idCol).Value2
-            $batchCell = $row.Cells.Item(1, $batchCol)
-            $batch = $batchCell.Text
-            if ([string]::IsNullOrWhiteSpace($batch)) { $batch = [string]$batchCell.Value2 }
-            $batch = $batch.Trim()
-            if ($batch.Length -lt 2) { $batch = $batch.PadLeft(2,'0') }
-            if ($batch -and $batch.Length -ge 2 -and $batch.Substring(0,2) -eq '08') {
-                $key = "$idh|$batch"
-                $keyCounts[$key] = ($keyCounts[$key] + 0) + 1
+            
+           try {
+                $idh = [string]$row.Cells.Item(1, $idCol).Value2
+                $batch = [string]$row.Cells.Item(1, $batchCol).Value2
+            } catch {
+                Log "Excel COM error row $($row.Row) IDHcol=$idCol Batchcol= $batchCol $($_.Exception.Message)"
+                
             }
+            $key = "$idh-*-$batch"
+            $keyCounts[$key] = ($keyCounts[$key] + 0) + 1
         }
     }
 
     # Second pass: apply coloring and write FoundPath
     if ($table.DataBodyRange -ne $null) {
         foreach ($row in $table.DataBodyRange.Rows) {
-            $idh = [string]$row.Cells.Item(1, $idCol).Value2
-            $batchCell = $row.Cells.Item(1, $batchCol)
-            $batch = $batchCell.Text
-            if ([string]::IsNullOrWhiteSpace($batch)) { $batch = [string]$batchCell.Value2 }
-            $batch = $batch.Trim()
-            if ($batch.Length -lt 2) { $batch = $batch.PadLeft(2,'0') }
-            $key = "$idh|$batch"
-            if (-not $seen.ContainsKey($key)) { $seen[$key] = 0 }
-            $seen[$key] = $seen[$key] + 1
+            try {
+                $idh = [string]$row.Cells.Item(1, $idCol).Value2
+                $batch = [string]$row.Cells.Item(1, $batchCol).Value2   
+            } catch {
+                Log "Excel COM error row $($row.Row) IDHcol=$idCol Batchcol= $batchCol $($_.Exception.Message)"
+                
+            }   
+            $key = "$idh-*-$batch"
+            Log "Processing IDH: $idh, Batch: $batch"
+ 
 
-            if (-not ($batch -and $batch.Length -ge 2 -and $batch.Substring(0,2) -eq '08')) {
+            if ($batch -and $batch -notlike '08*') {
                 # Non-08: do not modify original, just record
                 $redCount++
                 $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Non-08'; FoundPath = ''; ExcelRow = $row.Row }
-                continue
+                Log "Non-08 batch"
             }
-
-            $count = ($keyCounts[$key] + 0)
-            if ($count -gt 1 -and $seen[$key] -gt 1) {
+            elseif ($keyCounts.ContainsKey($key) -and $keyCounts[$key] -gt 1) { 
                 # Duplicate (2nd+): do not modify original, just record
+                $keyCounts[$key] = $keyCounts[$key] -1 
                 $orangeCount++
                 $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Duplicate'; FoundPath = ''; ExcelRow = $row.Row }
-                continue
+                Log "Duplicate entry"
             }
-
-            # Unique 08 row: search for PDF among candidate files for this IDH
-            $idhLower = $idh.ToLower().Trim()
-            $batchLower = $batch.ToLower()
-            $match = $null
-            $candidates = @()
-            if ($pdfCandidatesByIdh.ContainsKey($idhLower)) { $candidates = $pdfCandidatesByIdh[$idhLower] }
-            foreach ($pdf in $candidates) {
-                $pdfName = $pdf.Name.ToLower()
-                if ($pdfName.Contains($batchLower)) {
-                    $match = $pdf
-                    break
+            elseif ($batch -like '08*') {
+                $match = $null
+                foreach ($pdf in $allPdf) {
+                    if ($pdf.Name -like "*$idh*" -and $pdf.Name -like "*$batch*") {
+                        $match = $pdf
+                        break
+                    }
                 }
-            }
 
-            if ($match) {
-                $destinationName = $match.Name
-                $destinationPath = Join-Path $pdfOutputFolder $destinationName
-                $copyIndex = 1
-                while (Test-Path $destinationPath) {
-                    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($match.Name)
-                    $extension = [System.IO.Path]::GetExtension($match.Name)
-                    $destinationName = "{0}_{1}{2}" -f $baseName, $copyIndex, $extension
+                if ($match) {
+                    $destinationName = $match.Name
                     $destinationPath = Join-Path $pdfOutputFolder $destinationName
-                    $copyIndex++
-                }
-                Copy-Item -Path $match.FullName -Destination $destinationPath -Force
+                    $copyIndex = 1
+                    while (Test-Path $destinationPath) {
+                        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($match.Name)
+                        $extension = [System.IO.Path]::GetExtension($match.Name)
+                        $destinationName = "{0}_{1}{2}" -f $baseName, $copyIndex, $extension
+                        $destinationPath = Join-Path $pdfOutputFolder $destinationName
+                        $copyIndex++
+                    }
+                    Copy-Item -Path $match.FullName -Destination $destinationPath -Force
 
-                # Unique & found: record only
-                $blueCount++
-                $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Found'; FoundPath = $destinationPath; ExcelRow = $row.Row }
-            } else {
-                # Unique & missing: record only
-                $greenCount++
-                $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Missing'; FoundPath = ''; ExcelRow = $row.Row }
+                    # Unique & found: record only
+                    $blueCount++
+                    $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Found'; FoundPath = $match.FullName; ExcelRow = $row.Row }
+                    Log "Found and copied: $($match.FullName) to $destinationPath"
+                } else {
+                    # Unique & missing: record only
+                    $greenCount++
+                    $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Missing'; FoundPath = ''; ExcelRow = $row.Row }
+                    Log "Missing: $idh-$batch"
+                }
             }
+                     
         }
-    }
+            
+        }
+    
     $wb.Close($false)
     $excel.Quit()
 
     # Export an Excel workbook with color formatting for easy viewing
+    Log "Generating Excel report..."
     try {
         $reportXlsx = Join-Path $outputFolder ("CertificateReport_{0}.xlsx" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
         $repExcel = New-Object -ComObject Excel.Application
@@ -347,8 +364,9 @@ try {
             $idhCell.Value2 = if ($null -ne $r.IDH) { [string]$r.IDH } else { '' }
             $idhCell.NumberFormat = '@'
             $batchCell = $repWs.Cells.Item($rowIndex,2)
-            $batchCell.Value2 = if ($null -ne $r.Batch) { [string]$r.Batch } else { '' }
             $batchCell.NumberFormat = '@'
+            $batchCell.Value2 = if ($null -ne $r.Batch) { [string]$r.Batch } else { '' }
+           
             $repWs.Cells.Item($rowIndex,3).Value2 = if ($null -ne $r.Status) { [string]$r.Status } else { '' }
             $foundPath = if ($null -ne $r.FoundPath) { [string]$r.FoundPath } else { '' }
             if ($foundPath) {
@@ -366,9 +384,9 @@ try {
             # Apply color based on status
             $color = 0xFFFFFF
             switch ($r.Status) {
-                'Non-08' { $color = 0xC0C0C0 }      # red
-                'Duplicate' { $color = 0xFFA500 }   # orange
-                'Found' { $color = 0x99CCFF }       # light blue
+                'Non-08' { $color = 0x0000FF }      # red
+                'Duplicate' { $color = 0x00A5FF }   # orange
+                'Found' { $color = 0xFFCC99 }       # light blue
                 'Missing' { $color = 0xCCFFCC }     # light green
             }
             try {
@@ -399,6 +417,7 @@ catch {
     Log ($_.ToString())
 }
 finally {
+    Stop-Spinner
     $startBtn.Enabled = $true
 }
 
