@@ -172,6 +172,85 @@ $certificationField.Button.Add_Click({
 })
 
 # =========================
+# COPY VERIFICATION FUNCTION
+# =========================
+
+function Copy-FileWithVerification {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [int]$MaxRetries = 3,
+        [int]$RetryDelayMs = 500
+    )
+    
+    $sourceFile = Get-Item $SourcePath -ErrorAction SilentlyContinue
+    if (-not $sourceFile) {
+        return [PSCustomObject]@{
+            Success = $false
+            Error = "Source file not found or inaccessible"
+            SourceSize = 0
+            DestinationSize = 0
+        }
+    }
+    
+    $sourceSize = $sourceFile.Length
+    $retryCount = 0
+    $copySuccess = $false
+    $lastError = ""
+    
+    while ($retryCount -lt $MaxRetries -and -not $copySuccess) {
+        try {
+            Copy-Item -Path $SourcePath -Destination $DestinationPath -Force -ErrorAction Stop
+            $copySuccess = $true
+        } catch {
+            $lastError = $_.Exception.Message
+            $retryCount++
+            if ($retryCount -lt $MaxRetries) {
+                Start-Sleep -Milliseconds $RetryDelayMs
+            }
+        }
+    }
+    
+    if (-not $copySuccess) {
+        return [PSCustomObject]@{
+            Success = $false
+            Error = "Copy failed after $MaxRetries attempts: $lastError"
+            SourceSize = $sourceSize
+            DestinationSize = 0
+        }
+    }
+    
+    # Verify the copy
+    $destFile = Get-Item $DestinationPath -ErrorAction SilentlyContinue
+    if (-not $destFile) {
+        return [PSCustomObject]@{
+            Success = $false
+            Error = "Destination file not found after copy"
+            SourceSize = $sourceSize
+            DestinationSize = 0
+        }
+    }
+    
+    $destSize = $destFile.Length
+    
+    if ($sourceSize -ne $destSize) {
+        return [PSCustomObject]@{
+            Success = $false
+            Error = "File size mismatch: source=$sourceSize, destination=$destSize bytes"
+            SourceSize = $sourceSize
+            DestinationSize = $destSize
+        }
+    }
+    
+    return [PSCustomObject]@{
+        Success = $true
+        Error = ""
+        SourceSize = $sourceSize
+        DestinationSize = $destSize
+    }
+}
+
+# =========================
 # MAIN
 # =========================
 
@@ -319,12 +398,21 @@ try {
                         $destinationPath = Join-Path $pdfOutputFolder $destinationName
                         $copyIndex++
                     }
-                    Copy-Item -Path $match.FullName -Destination $destinationPath -Force
-
-                    # Unique & found: record only
-                    $blueCount++
-                    $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Found'; FoundPath = $match.FullName; ExcelRow = $row.Row }
-                    Log "Found and copied: $($match.FullName) to $destinationPath"
+                    
+                    # Copy with verification
+                    $copyResult = Copy-FileWithVerification -SourcePath $match.FullName -DestinationPath $destinationPath
+                    
+                    if ($copyResult.Success) {
+                        # Unique & found: record only
+                        $blueCount++
+                        $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Found'; FoundPath = $match.FullName; ExcelRow = $row.Row }
+                        Log "Found and copied: $($match.FullName) to $destinationPath (Size: $($copyResult.SourceSize) bytes)"
+                    } else {
+                        # Copy failed - treat as missing
+                        $greenCount++
+                        $reportRows += [PSCustomObject]@{ IDH = $idh; Batch = $batch; Status = 'Missing copy failed'; FoundPath = $match.FullName; ExcelRow = $row.Row }
+                        Log "Missing: $idh-$batch - ERROR: $($copyResult.Error)"
+                    }
                 } else {
                     # Unique & missing: record only
                     $greenCount++
